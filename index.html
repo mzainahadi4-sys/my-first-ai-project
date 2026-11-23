@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- Makes the page fit phone screens instead of being zoomed out -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MoodLens: a tiny AI that reads mood</title>
+
+<style>
+/* ---------- CSS: how it looks ---------- */
+:root {
+  --bg: #f6f3ee; --card: #ffffff; --text: #23211d; --muted: #6b665d;
+  --line: #ddd7cb; --accent: #2b5fd9; --accent-text: #ffffff;
+  --pos: #1e8a5a; --neg: #d2493a; --neu: #7a756b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17161a; --card: #211f25; --text: #f0ede6; --muted: #a39e94;
+    --line: #38353d; --accent: #7aa2ff; --accent-text: #0c1633;
+    --pos: #4cc38a; --neg: #ff7b6b; --neu: #a39e94;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: Georgia, "Times New Roman", serif; line-height: 1.5;
+}
+.wrap { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 2rem; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0 0 20px; }
+label { font-weight: bold; display: block; margin-bottom: 6px; }
+
+/* font-size 16px stops iPhones from zooming in when you tap the box */
+textarea {
+  width: 100%; padding: 12px; font: 16px/1.4 inherit; font-family: inherit;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); color: var(--text); resize: vertical;
+}
+.row { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 20px; }
+
+/* min-height 48px = comfortable to tap with a thumb */
+button {
+  min-height: 48px; padding: 0 20px; font: bold 16px inherit; font-family: inherit;
+  border: 0; border-radius: 10px; cursor: pointer;
+  background: var(--accent); color: var(--accent-text);
+}
+button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+button.pos { background: var(--pos); color: #fff; }
+button.neg { background: var(--neg); color: #fff; }
+button:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 18px; }
+.card[hidden] { display: none; }
+.verdict { display: flex; align-items: center; gap: 12px; }
+.emoji { font-size: 2.6rem; }
+.verdict h2 { margin: 0; font-size: 1.5rem; }
+.bar { height: 12px; background: var(--line); border-radius: 6px; overflow: hidden; margin: 14px 0 6px; }
+.fill { height: 100%; width: 0; background: var(--neu); transition: width .4s; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip { padding: 3px 10px; border-radius: 999px; font-size: .9rem; border: 1px solid currentColor; }
+.chip.pos { color: var(--pos); } .chip.neg { color: var(--neg); }
+.small { font-size: .9rem; color: var(--muted); margin: 6px 0 0; }
+h3 { margin: 0 0 4px; }
+
+/* the colour of the result changes with the mood */
+.card.positive .fill { background: var(--pos); }
+.card.positive h2 { color: var(--pos); }
+.card.negative .fill { background: var(--neg); }
+.card.negative h2 { color: var(--neg); }
+</style>
+</head>
+
+<body>
+<!-- ---------- HTML: what is on the page ---------- -->
+<main class="wrap">
+  <h1>MoodLens</h1>
+  <p class="sub">A tiny AI that reads the mood of a sentence. You can teach it, too.</p>
+
+  <label for="text">Type a sentence</label>
+  <textarea id="text" rows="4" placeholder="Example: I love this phone, the camera is great"></textarea>
+
+  <div class="row">
+    <button id="go">Analyze mood</button>
+    <button id="sample" class="ghost">Try an example</button>
+  </div>
+
+  <section id="result" class="card" hidden aria-live="polite">
+    <div class="verdict">
+      <div class="emoji" id="emoji"></div>
+      <div>
+        <h2 id="label"></h2>
+        <div class="small" id="conf"></div>
+      </div>
+    </div>
+    <div class="bar"><div class="fill" id="fill"></div></div>
+    <div class="small">Words that pushed the decision:</div>
+    <div class="chips" id="chips"></div>
+  </section>
+
+  <section id="teach" class="card" hidden>
+    <h3>Was it wrong? Teach it.</h3>
+    <p class="small">Tap the correct mood and the AI learns from your sentence.</p>
+    <div class="row">
+      <button class="pos" id="teachPos">This is positive</button>
+      <button class="neg" id="teachNeg">This is negative</button>
+    </div>
+    <p class="small" id="note"></p>
+  </section>
+
+  <p class="small" id="stats"></p>
+</main>
+
+<script>
+/* ---------- JavaScript: how it thinks ---------- */
+
+// STEP 1: training data. The AI learns from these examples.
+const examples = [
+  ["I love this, it is wonderful", "positive"],
+  ["What a great day, I am so happy", "positive"],
+  ["This food is delicious and fresh", "positive"],
+  ["Amazing service, very friendly staff", "positive"],
+  ["I really enjoyed the movie, it was fantastic", "positive"],
+  ["The phone works perfectly and the camera is excellent", "positive"],
+  ["Thank you, you were so helpful and kind", "positive"],
+  ["Beautiful place, I had a lovely time", "positive"],
+  ["Best purchase ever, totally worth it", "positive"],
+  ["I am proud and excited about the result", "positive"],
+  ["Super fast delivery and good quality", "positive"],
+  ["This is awesome, I recommend it", "positive"],
+  ["I hate this, it is terrible", "negative"],
+  ["What a awful day, I am so sad", "negative"],
+  ["The food was cold and tasteless", "negative"],
+  ["Horrible service, the staff were rude", "negative"],
+  ["I was bored, the movie was boring and bad", "negative"],
+  ["The phone broke and the battery is useless", "negative"],
+  ["Worst purchase ever, a complete waste of money", "negative"],
+  ["Dirty place and I had a terrible time", "negative"],
+  ["I am angry and disappointed with the result", "negative"],
+  ["Slow delivery and poor quality", "negative"],
+  ["This is awful, I do not recommend it", "negative"],
+  ["It is broken again, so annoying", "negative"]
+];
+
+// STEP 2: split a sentence into clean lowercase words
+function tokenize(text) {
+  return text
+    .toLowerCase()
+    .replace(/[’‘]/g, "'")        // phone keyboards use curly apostrophes
+    .replace(/[^a-z'\s]/g, " ")    // remove numbers and punctuation
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+// STEP 3: "training" = counting how often each word appears in each mood
+let counts, totals, docs, vocab;
+function train() {
+  counts = { positive: {}, negative: {} };
+  totals = { positive: 0, negative: 0 };
+  docs   = { positive: 0, negative: 0 };
+  vocab = new Set();
+  for (const [text, label] of examples) {
+    docs[label]++;
+    for (const w of tokenize(text)) {
+      counts[label][w] = (counts[label][w] || 0) + 1;
+      totals[label]++;
+      vocab.add(w);
+    }
+  }
+}
+
+// How likely is a word, given a mood? (+1 avoids zero for unseen words)
+function wordProb(word, label) {
+  return ((counts[label][word] || 0) + 1) / (totals[label] + vocab.size);
+}
+
+// STEP 4: the AI itself. This is called "Naive Bayes".
+// For each mood: start with how common the mood is, then add the
+// log-probability of every known word. The higher score wins.
+function classify(text) {
+  const words = tokenize(text).filter(w => vocab.has(w));
+  if (words.length === 0) return null;                 // nothing it recognises
+
+  const n = docs.positive + docs.negative;
+  const score = {};
+  for (const label of ["positive", "negative"]) {
+    score[label] = Math.log(docs[label] / n);
+    for (const w of words) score[label] += Math.log(wordProb(w, label));
+  }
+  // turn scores into percentages that add up to 100%
+  const max = Math.max(score.positive, score.negative);
+  const ep = Math.exp(score.positive - max), en = Math.exp(score.negative - max);
+  return { positive: ep / (ep + en), negative: en / (ep + en), words };
+}
+
+// STEP 5: show the answer on the page
+const $ = id => document.getElementById(id);
+let lastText = "";
+
+function analyze() {
+  const text = $("text").value.trim();
+  if (!text) { $("text").focus(); return; }
+  lastText = text;
+
+  const r = classify(text);
+  const card = $("result");
+  card.hidden = false;
+  $("teach").hidden = false;
+  $("note").textContent = "";
+  $("chips").innerHTML = "";
+  card.className = "card";
+
+  if (!r) {
+    $("emoji").textContent = "🤔";
+    $("label").textContent = "I do not know these words";
+    $("conf").textContent = "Teach me with the buttons below.";
+    $("fill").style.width = "0%";
+    return;
+  }
+
+  const pos = r.positive;
+  let mood, emoji, conf;
+  if (pos > 0.6)      { mood = "positive"; emoji = "😊"; conf = pos; }
+  else if (pos < 0.4) { mood = "negative"; emoji = "😞"; conf = 1 - pos; }
+  else                { mood = "neutral";  emoji = "😐"; conf = 1 - Math.abs(pos - 0.5) * 2; }
+
+  card.classList.add(mood);
+  $("emoji").textContent = emoji;
+  $("label").textContent = mood.charAt(0).toUpperCase() + mood.slice(1);
+  $("conf").textContent = mood === "neutral"
+    ? "Not sure: " + Math.round(pos * 100) + "% positive"
+    : Math.round(conf * 100) + "% sure";
+  $("fill").style.width = Math.round(mood === "neutral" ? 50 : conf * 100) + "%";
+
+  // chips: which words leaned positive or negative?
+  for (const w of [...new Set(r.words)]) {
+    const lean = Math.log(wordProb(w, "positive") / wordProb(w, "negative"));
+    if (Math.abs(lean) < 0.4) continue;
+    const chip = document.createElement("span");
+    chip.className = "chip " + (lean > 0 ? "pos" : "neg");
+    chip.textContent = w;
+    $("chips").appendChild(chip);
+  }
+  if (!$("chips").children.length) $("chips").textContent = "No strong words found.";
+}
+
+// STEP 6: let the user teach the AI, then retrain instantly
+function teach(label) {
+  if (!lastText) return;
+  examples.push([lastText, label]);
+  train();
+  updateStats();
+  analyze();
+  $("note").textContent = "Learned! Saved as " + label + ".";
+}
+
+function updateStats() {
+  $("stats").textContent = "The AI has learned from " + examples.length +
+    " sentences and knows " + vocab.size + " words.";
+}
+
+// STEP 7: connect buttons to functions
+const samples = [
+  "The pizza was delicious and the staff were so friendly",
+  "Terrible battery, it broke after one day",
+  "I am excited and happy about the trip",
+  "The room was dirty and the service was slow"
+];
+let s = 0;
+$("go").addEventListener("click", analyze);
+$("sample").addEventListener("click", () => {
+  $("text").value = samples[s++ % samples.length];
+  analyze();
+});
+$("teachPos").addEventListener("click", () => teach("positive"));
+$("teachNeg").addEventListener("click", () => teach("negative"));
+
+train();
+updateStats();
+</script>
+</body>
+</html>
